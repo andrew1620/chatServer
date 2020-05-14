@@ -10,6 +10,9 @@ app.get("/rooms", (req, res) => {
 
 const users = new Map();
 users.set(25, "Petter");
+
+const users2 = new Map();
+
 const rooms = [
   {
     id: 0,
@@ -44,6 +47,7 @@ const removeParticipant = (roomId, socketId) => {
 
 io.on("connection", (socket) => {
   console.log("Пользователь подключился: ", socket.id, " ", new Date().toLocaleTimeString());
+  users2.set(socket.id, new Map());
   // Ф-ия добавления пользователя в БД
   socket.on("addUser", (data, cb) => {
     if (!data.name) return cb(createAnswer(1, "Name is necessary"));
@@ -51,6 +55,10 @@ io.on("connection", (socket) => {
       if (name === data.name) return cb(createAnswer(1, "The name is already taken"));
     }
     users.set(socket.id, data.name);
+    //-----------------
+    users2.get(socket.id).set("name", data.name);
+    // users2.set(socket.id,  new Map([["name", data.name]]));
+    //-----------------
     console.log("add user --- ", users);
     cb(createAnswer(0, null, { name: data.name, id: socket.id }));
     return io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
@@ -76,7 +84,9 @@ io.on("connection", (socket) => {
     socket.join(+data.roomId);
     addParticipant(+data.roomId, socket.id);
     io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
-
+    //---------------
+    users2.get(socket.id).set("roomId", data.roomId);
+    //---------------
     return cb(
       createAnswer(0, null, {
         room: rooms.find((room) => room.id == data.roomId),
@@ -90,6 +100,9 @@ io.on("connection", (socket) => {
 
     socket.leave(data.roomId);
     removeParticipant(data.roomId, socket.id);
+    //---------------
+    users2.get(socket.id).delete("roomId");
+    //---------------
     io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
     return cb(createAnswer(0, null, null));
   });
@@ -105,10 +118,28 @@ io.on("connection", (socket) => {
     io.in(data.roomId).emit("ROOM:MESSAGE_ADDED", createAnswer(0, null, { message: newMessage }));
     return cb(createAnswer(0, null, { newMessage }));
   });
+  socket.on("USERS:DISCONNECT", (data, cb) => {
+    if (data.roomId === undefined) cb(createAnswer(1, `You didn't send roomId`, { data }));
+    removeParticipant(data.roomId, socket.id);
+    users.delete(socket.id);
+    console.log("disconnected user --- ", rooms[data.roomId].participants);
+    return cb(createAnswer(0, "user disconnected", null));
+  });
   // Отслеживание отключения пользователя
   socket.on("disconnect", () => {
-    console.log("Пользователь отключился: ", socket.id, " ", new Date().toLocaleTimeString());
+    //-------------
+    // users2.get(socket.id).has("roomId") &&
+    //   removeParticipant(users2.get(socket.id).get("roomId"), +socket.id);
+    // users2.delete(socket.id);
+    //-------------
     users.delete(socket.id);
+    console.log(
+      "Пользователь отключился: ",
+      socket.id,
+      " ",
+      new Date().toLocaleTimeString(),
+      users2
+    );
   });
 });
 
