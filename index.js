@@ -17,7 +17,7 @@ const rooms = [
   },
 ];
 const messages = new Map();
-messages.set(0, [{ owner: "John", time: "22:00", message: "Hello" }]);
+messages.set(0, []);
 
 const createAnswer = (resultCode, message = "", data = {}) => {
   return { resultCode, message, data };
@@ -30,6 +30,7 @@ const addParticipant = (roomId, socketId) => {
   console.log("Пользователь добавился в комнату --- ", rooms);
 };
 const removeParticipant = (roomId, socketId) => {
+  if (isNaN(roomId)) return;
   let necessaryRoom = rooms.find((room) => room.id === roomId);
   necessaryRoom.participants = necessaryRoom.participants.filter((user) => user.id !== socketId);
   console.log("Пользователь вышел с комнаты --- ", necessaryRoom);
