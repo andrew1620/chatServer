@@ -9,17 +9,11 @@ app.get("/rooms", (req, res) => {
 });
 
 const users = new Map();
-users.set(25, "Petter");
-
-const users2 = new Map();
 
 const rooms = [
   {
     id: 0,
-    participants: [
-      { name: "John", id: "userId" },
-      { name: "Petter", id: "userId" },
-    ],
+    participants: [],
   },
 ];
 const messages = new Map();
@@ -32,40 +26,33 @@ const createAnswer = (resultCode, message = "", data = {}) => {
 const addParticipant = (roomId, socketId) => {
   rooms
     .find((room) => room.id === roomId)
-    .participants.push({ name: users.get(socketId), id: socketId });
-  console.log(rooms);
+    .participants.push({ name: users.get(socketId).get("name"), id: socketId });
+  console.log("Пользователь добавился в комнату --- ", rooms);
 };
 const removeParticipant = (roomId, socketId) => {
   let necessaryRoom = rooms.find((room) => room.id === roomId);
   necessaryRoom.participants = necessaryRoom.participants.filter((user) => user.id !== socketId);
-  console.log(necessaryRoom);
+  console.log("Пользователь вышел с комнаты --- ", necessaryRoom);
 };
-// addParticipant(0, 25);
-// console.log(" before deleting --- ", rooms);
-// removeParticipant(0, 25);
-// console.log("after deleteting", rooms[0].participants);
 
 io.on("connection", (socket) => {
   console.log("Пользователь подключился: ", socket.id, " ", new Date().toLocaleTimeString());
-  users2.set(socket.id, new Map());
+  users.set(socket.id, new Map());
   // Ф-ия добавления пользователя в БД
   socket.on("addUser", (data, cb) => {
     if (!data.name) return cb(createAnswer(1, "Name is necessary"));
-    for (let name of users.values()) {
-      if (name === data.name) return cb(createAnswer(1, "The name is already taken"));
+
+    for (let user of users.values()) {
+      if (user.get("name") === data.name) return cb(createAnswer(1, "The name is already taken"));
     }
-    users.set(socket.id, data.name);
-    //-----------------
-    users2.get(socket.id).set("name", data.name);
-    // users2.set(socket.id,  new Map([["name", data.name]]));
-    //-----------------
-    console.log("add user --- ", users);
+
+    users.get(socket.id).set("name", data.name);
     cb(createAnswer(0, null, { name: data.name, id: socket.id }));
     return io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
   });
   // Ф-ия запроса всех доступных комнат
   socket.on("requireRooms", (data, cb) => {
-    console.log("require rooms --- ", rooms);
+    console.log("Пользователем были запрошены комнаты --- ", rooms);
     return cb(createAnswer(0, null, { rooms: rooms }));
   });
   // Ф-ия отслеживания создания новых комнат
@@ -75,7 +62,7 @@ io.on("connection", (socket) => {
     messages.set(roomId, []);
     io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
 
-    console.log("rooms added --- ", rooms);
+    return console.log("Была добавлена комната --- ", rooms);
   });
   // Ф-ия подключения к комнате
   socket.on("ROOM:JOIN", (data, cb) => {
@@ -84,9 +71,9 @@ io.on("connection", (socket) => {
     socket.join(+data.roomId);
     addParticipant(+data.roomId, socket.id);
     io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
-    //---------------
-    users2.get(socket.id).set("roomId", data.roomId);
-    //---------------
+
+    users.get(socket.id).set("roomId", data.roomId);
+
     return cb(
       createAnswer(0, null, {
         room: rooms.find((room) => room.id == data.roomId),
@@ -96,49 +83,44 @@ io.on("connection", (socket) => {
   });
   // Ф-ия выхода из комнаты
   socket.on("ROOM:LEAVE", (data, cb) => {
-    if (data.roomId === null) return cb(createAnswer(1, `You didn't pass roomId`, { data }));
+    const roomId = +users.get(socket.id).get("roomId");
 
-    socket.leave(data.roomId);
-    removeParticipant(data.roomId, socket.id);
-    //---------------
-    users2.get(socket.id).delete("roomId");
-    //---------------
+    socket.leave(roomId);
+    removeParticipant(roomId, socket.id);
+    users.get(socket.id).delete("roomId");
+
     io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
     return cb(createAnswer(0, null, null));
   });
   // Ф-ия отправки сообщения
   socket.on("ROOM:SEND_MESSAGE", (data, cb) => {
-    if (!data.message || data.roomId === null)
-      return cb(createAnswer(1, `You didn't send a message or roomId`, null));
+    if (data.message === undefined) return cb(createAnswer(1, `You didn't send a message`, null));
 
-    const newMessage = { ...data.message, id: Date.now(), owner: users.get(socket.id) };
-    if (!messages.has(data.roomId)) messages.set(roomId, []);
-    messages.get(data.roomId).push(newMessage);
+    const newMessage = {
+      ...data.message,
+      id: Date.now(),
+      owner: users.get(socket.id).get("name"),
+    };
+    const roomId = +users.get(socket.id).get("roomId");
 
-    io.in(data.roomId).emit("ROOM:MESSAGE_ADDED", createAnswer(0, null, { message: newMessage }));
+    if (!messages.has(roomId)) messages.set("roomId", []);
+    messages.get(roomId).push(newMessage);
+
+    io.in(roomId).emit("ROOM:MESSAGE_ADDED", createAnswer(0, null, { message: newMessage }));
     return cb(createAnswer(0, null, { newMessage }));
-  });
-  socket.on("USERS:DISCONNECT", (data, cb) => {
-    if (data.roomId === undefined) cb(createAnswer(1, `You didn't send roomId`, { data }));
-    removeParticipant(data.roomId, socket.id);
-    users.delete(socket.id);
-    console.log("disconnected user --- ", rooms[data.roomId].participants);
-    return cb(createAnswer(0, "user disconnected", null));
   });
   // Отслеживание отключения пользователя
   socket.on("disconnect", () => {
-    //-------------
-    // users2.get(socket.id).has("roomId") &&
-    //   removeParticipant(users2.get(socket.id).get("roomId"), +socket.id);
-    // users2.delete(socket.id);
-    //-------------
+    if (users.get(socket.id).has("roomId")) {
+      removeParticipant(+users.get(socket.id).get("roomId"), socket.id);
+      io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
+    }
     users.delete(socket.id);
-    console.log(
+    return console.log(
       "Пользователь отключился: ",
       socket.id,
       " ",
-      new Date().toLocaleTimeString(),
-      users2
+      new Date().toLocaleTimeString()
     );
   });
 });
