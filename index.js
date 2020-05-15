@@ -1,128 +1,131 @@
 const app = require("express")();
 const http = require("http").createServer(app);
 const io = require("socket.io")(http);
+const DataBase = require("./db/create.js");
 
-const PORT = 3000;
+const PORT = 3005;
 
-app.get("/rooms", (req, res) => {
-  res.json({ server: "works" });
-});
-
+// БД для хранения списка пользователей
 const users = new Map();
-
-const rooms = [
-  {
-    id: 0,
-    participants: [],
-  },
-];
+// БД для хранения списка комнат
+const rooms = new DataBase();
+// БД для хранения сообщений
 const messages = new Map();
+
+// Одна комната доступна по умолчанию и должна иметь свой массив для сообщений
 messages.set(0, []);
 
+// Ф-ия для создания ответа клиенту
 const createAnswer = (resultCode, message = "", data = {}) => {
   return { resultCode, message, data };
 };
 
-const addParticipant = (roomId, socketId) => {
-  rooms
-    .find((room) => room.id === roomId)
-    .participants.push({ name: users.get(socketId).get("name"), id: socketId });
-  console.log("Пользователь добавился в комнату --- ", rooms);
-};
-const removeParticipant = (roomId, socketId) => {
-  if (isNaN(roomId)) return;
-  let necessaryRoom = rooms.find((room) => room.id === roomId);
-  necessaryRoom.participants = necessaryRoom.participants.filter((user) => user.id !== socketId);
-  console.log("Пользователь вышел с комнаты --- ", necessaryRoom);
-};
-
+// Событие подключения
 io.on("connection", (socket) => {
-  console.log("Пользователь подключился: ", socket.id, " ", new Date().toLocaleTimeString());
+  // Закидываем в БД юзеров айдишник, по которому можно получить данные пользователя
   users.set(socket.id, new Map());
-  // Ф-ия добавления пользователя в БД
-  socket.on("addUser", (data, cb) => {
+
+  // Добавление пользователя в БД после ввода имени
+  socket.on("USER:ADD", (data, cb) => {
     if (!data.name) return cb(createAnswer(1, "Name is necessary"));
 
+    // Проверка на наличие такого имени
     for (let user of users.values()) {
       if (user.get("name") === data.name) return cb(createAnswer(1, "The name is already taken"));
     }
 
+    // Добавляем имя пользователя
     users.get(socket.id).set("name", data.name);
+    // Отвечаем клиенту
     cb(createAnswer(0, null, { name: data.name, id: socket.id }));
-    return io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
+    // Отправляем список комнат
+    return io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms: rooms.getDb() }));
   });
-  // Ф-ия запроса всех доступных комнат
-  socket.on("requireRooms", (data, cb) => {
-    console.log("Пользователем были запрошены комнаты --- ", rooms);
-    return cb(createAnswer(0, null, { rooms: rooms }));
-  });
-  // Ф-ия отслеживания создания новых комнат
-  socket.on("createRoom", (data, cb) => {
-    const roomId = rooms.length;
-    rooms.push({ id: roomId, participants: [] });
-    messages.set(roomId, []);
-    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
 
-    return console.log("Была добавлена комната --- ", rooms);
+  // Событие для передачи всех доступных комнат
+  socket.on("ROOMS:REQUIRE", (data, cb) => {
+    return cb(createAnswer(0, null, { rooms: rooms.getDb() }));
   });
-  // Ф-ия подключения к комнате
+  // Создание новой комнаты
+  socket.on("ROOM:CREATE", (data, cb) => {
+    // Генерируем айди комнаты. Использую длину массива, так как нет возможности удаления комнаты,
+    // потом можно воспользоваться средствами для генерации айди
+    const roomId = rooms.getDb().length;
+    // Добавляем комнату в БД
+    rooms.addRoom(roomId);
+    // Создаем массив сообщений для комнаты
+    messages.set(roomId, []);
+    // ОТправляем всем список комнат
+    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms: rooms.getDb() }));
+  });
+
+  //Подключение к комнате
   socket.on("ROOM:JOIN", (data, cb) => {
     if (!data.roomId) return cb(createAnswer(1, `You didn't pass roomId`, null));
 
+    // Добавляем участника в определенную комнату
+    rooms.addParticipant(+data.roomId, users.get(socket.id).get("name"), socket.id);
+    // Подключаем пользователя к комнате
     socket.join(+data.roomId);
-    addParticipant(+data.roomId, socket.id);
-    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
-
+    // Отправляем всем список комнат с изменившимся списком участников
+    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms: rooms.getDb() }));
+    // В массив пользователей конкретному участнику добавляем данные о комнате, в которую он вошел
     users.get(socket.id).set("roomId", data.roomId);
-
+    // Отвечаем клиенту
     return cb(
       createAnswer(0, null, {
-        room: rooms.find((room) => room.id == data.roomId),
+        room: rooms.getRoom(+data.roomId),
         messages: messages.get(+data.roomId),
       })
     );
   });
-  // Ф-ия выхода из комнаты
+
+  // Выход из комнаты
   socket.on("ROOM:LEAVE", (data, cb) => {
+    // Получили комнату, в которой находился пользователь
     const roomId = +users.get(socket.id).get("roomId");
-
+    // Отключили пользователя от комнаты
     socket.leave(roomId);
-    removeParticipant(roomId, socket.id);
+    // Удалили из списка участников комнаты
+    rooms.removeParticipant(roomId, socket.id);
+    // Удалили данные о комнате, которые были в данных юзера
     users.get(socket.id).delete("roomId");
-
-    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
+    // Отправили всем список комнат
+    io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms: rooms.getDb() }));
+    // Ответили клиенту
     return cb(createAnswer(0, null, null));
   });
-  // Ф-ия отправки сообщения
+  // Прием сообщения и отправка
   socket.on("ROOM:SEND_MESSAGE", (data, cb) => {
     if (data.message === undefined) return cb(createAnswer(1, `You didn't send a message`, null));
-
+    // Формируем новое сообщение
     const newMessage = {
       ...data.message,
       id: Date.now(),
       owner: users.get(socket.id).get("name"),
     };
+    // Получаем айди комнаты, в которую надо отправить
     const roomId = +users.get(socket.id).get("roomId");
 
+    // Проверка наличия массива сообщений по такому айди
     if (!messages.has(roomId)) messages.set("roomId", []);
     messages.get(roomId).push(newMessage);
 
+    // Отправляем сообщение всем участникам комнаты
     io.in(roomId).emit("ROOM:MESSAGE_ADDED", createAnswer(0, null, { message: newMessage }));
+    // Ответ пользователю
     return cb(createAnswer(0, null, { newMessage }));
   });
   // Отслеживание отключения пользователя
   socket.on("disconnect", () => {
+    // Проверяем, отключился пользователь во время выбора чата или в чате
+    // если в чате: удаляем участника из комнаты и оповещаем об удалении
     if (users.get(socket.id).has("roomId")) {
-      removeParticipant(+users.get(socket.id).get("roomId"), socket.id);
-      io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms }));
+      rooms.removeParticipant(+users.get(socket.id).get("roomId"), socket.id);
+      io.sockets.emit("ROOM:ADDED", createAnswer(0, null, { rooms: rooms.getDb() }));
     }
+    // Удаляем из БД пользователей
     users.delete(socket.id);
-    return console.log(
-      "Пользователь отключился: ",
-      socket.id,
-      " ",
-      new Date().toLocaleTimeString()
-    );
   });
 });
 
